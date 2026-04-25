@@ -120,6 +120,22 @@ export class AccountsService {
     }
   }
 
+  async emailExists(rawEmail: string) {
+    try {
+      const mailbox = parseMailbox(rawEmail);
+      const [rows] = await this.db.execute(
+        'SELECT 1 AS found FROM users WHERE email = ? LIMIT 1',
+        [mailbox.email],
+      );
+      const list = rows as { found: number }[];
+      const exists = list.length > 0;
+      return { ok: true, exists, email: mailbox.email };
+    } catch (error) {
+      if (error instanceof HttpException) throw error;
+      this.handleError(error);
+    }
+  }
+
   async deleteAccount(email: string) {
     try {
       const mailbox = parseMailbox(email);

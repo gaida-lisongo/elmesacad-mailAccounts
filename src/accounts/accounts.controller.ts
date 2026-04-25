@@ -1,9 +1,14 @@
-import { Body, Controller, Delete, Get, Post, Put } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Post, Put, Query } from '@nestjs/common';
 import { AccountsService } from './accounts.service';
 
 @Controller('mail-accounts')
 export class AccountsController {
   constructor(private readonly accountsService: AccountsService) {}
+
+  @Get('exists')
+  exists(@Query('email') email?: string) {
+    return this.accountsService.emailExists(email ?? '');
+  }
 
   @Get()
   list() {
