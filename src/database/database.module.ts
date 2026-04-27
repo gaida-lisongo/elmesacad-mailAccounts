@@ -15,12 +15,16 @@ import * as mysql from 'mysql2/promise';
           typeof portRaw === 'number'
             ? portRaw
             : parseInt(String(portRaw), 10) || 3306;
+        const pass =
+          configService.get<string>('DB_PASS') ??
+          configService.get<string>('DB_SECRET') ??
+          'admin';
         return await mysql.createConnection({
           host: configService.get<string>('DB_HOST', 'localhost'),
           port,
           user: configService.get<string>('DB_USER', 'mailuser'),
-          password: configService.get<string>('DB_SECRET', 'admin'),
-          database: configService.get<string>('DB_NAME', 'mailserver'),
+          password: pass,
+          database: configService.get<string>('DB_NAME', 'servermail'),
           connectTimeout: 8000,
         });
       },

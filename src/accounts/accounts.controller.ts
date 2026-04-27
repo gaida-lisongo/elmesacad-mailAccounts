@@ -1,7 +1,20 @@
-import { Body, Controller, Delete, Get, Post, Put, Query } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  Param,
+  ParseIntPipe,
+  Post,
+  Put,
+  Query,
+  UseGuards,
+} from '@nestjs/common';
 import { AccountsService } from './accounts.service';
+import { AccountApiGuard } from '../guards/account-api.guard';
 
 @Controller('mail-accounts')
+@UseGuards(AccountApiGuard)
 export class AccountsController {
   constructor(private readonly accountsService: AccountsService) {}
 
@@ -12,27 +25,29 @@ export class AccountsController {
 
   @Get()
   list() {
-    return this.accountsService.listMailAccounts();
+    return this.accountsService.listUsers();
+  }
+
+  @Get(':id')
+  getOne(@Param('id', ParseIntPipe) id: number) {
+    return this.accountsService.getUserById(id);
   }
 
   @Post()
   create(@Body() body: { email?: string; password?: string }) {
-    return this.accountsService.createAccount(
-      body.email ?? '',
-      body.password ?? '',
-    );
+    return this.accountsService.createUser(body.email ?? '', body.password ?? '');
   }
 
-  @Delete()
-  remove(@Body() body: { email?: string }) {
-    return this.accountsService.deleteAccount(body.email ?? '');
+  @Put(':id')
+  update(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() body: { email?: string; password?: string },
+  ) {
+    return this.accountsService.updateUser(id, body);
   }
 
-  @Put()
-  updatePassword(@Body() body: { email?: string; password?: string }) {
-    return this.accountsService.updatePassword(
-      body.email ?? '',
-      body.password ?? '',
-    );
+  @Delete(':id')
+  remove(@Param('id', ParseIntPipe) id: number) {
+    return this.accountsService.deleteUser(id);
   }
 }

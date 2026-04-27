@@ -1,14 +1,13 @@
 import { HttpException, HttpStatus, Inject, Injectable } from '@nestjs/common';
-import { Connection } from 'mysql2/promise';
+import { Connection, ResultSetHeader, RowDataPacket } from 'mysql2/promise';
 import { buildDovecotHash, parseMailbox } from './mail-accounts.util';
 
 export type MailApiErrorCode =
   | 'validation_error'
+  | 'not_found'
   | 'db_unreachable'
   | 'db_auth_failed'
   | 'db_missing_config'
-  | 'maildir_creation_failed'
-  | 'maildir_permission_failed'
   | 'internal_error';
 
 @Injectable()
@@ -19,6 +18,7 @@ export class AccountsService {
 
   private getStatusFromCode(code: MailApiErrorCode): number {
     if (code === 'validation_error') return HttpStatus.BAD_REQUEST;
+    if (code === 'not_found') return HttpStatus.NOT_FOUND;
     if (code === 'db_unreachable') return HttpStatus.SERVICE_UNAVAILABLE;
     return HttpStatus.INTERNAL_SERVER_ERROR;
   }
@@ -42,11 +42,12 @@ export class AccountsService {
       error.message === 'invalid_email' ||
       error.message === 'invalid_password' ||
       error.message === 'hash_generation_failed' ||
-      error.message === 'openssl_missing'
+      error.message === 'openssl_missing' ||
+      error.message === 'user_not_found'
     ) {
       this.throwApiError(
         'validation_error',
-        'Invalid payload. Provide non-empty email/password and an email with user@domain.',
+        'Invalid payload or user id.',
       );
     }
     if (error.message === 'db_port_invalid') {
@@ -56,7 +57,7 @@ export class AccountsService {
       );
     }
     if (mysqlError.code === 'ER_DUP_ENTRY') {
-      this.throwApiError('validation_error', 'Email already exists.');
+      this.throwApiError('validation_error', 'Email or alias already exists.');
     }
     if (
       mysqlError.code === 'ECONNREFUSED' ||
@@ -71,36 +72,41 @@ export class AccountsService {
     if (mysqlError.code === 'ER_ACCESS_DENIED_ERROR') {
       this.throwApiError(
         'db_auth_failed',
-        'Database authentication failed. Verify DB_USER and DB_SECRET.',
-      );
-    }
-    if (
-      error.message === 'maildir_chown_failed' ||
-      error.message === 'chown_command_missing'
-    ) {
-      this.throwApiError(
-        'maildir_permission_failed',
-        'Maildir created but chown to vmail:vmail failed.',
+        'Database authentication failed. Verify DB_USER and DB_PASS/DB_SECRET.',
       );
     }
     this.throwApiError('internal_error', error.message || 'Unexpected server error');
   }
 
-  async createAccount(email: string, password: string) {
+  private async getOrCreateDomainId(domain: string): Promise<number> {
+    const [existing] = await this.db.execute<RowDataPacket[]>(
+      'SELECT id FROM virtual_domains WHERE name = ? LIMIT 1',
+      [domain],
+    );
+    if (existing.length) {
+      return Number(existing[0].id);
+    }
+    const [res] = await this.db.execute<ResultSetHeader>(
+      'INSERT INTO virtual_domains (name) VALUES (?)',
+      [domain],
+    );
+    return res.insertId;
+  }
+
+  async createUser(email: string, password: string) {
     try {
-      const mailbox = parseMailbox(email);
+      const m = parseMailbox(email);
       const hash = await buildDovecotHash(password);
-      await this.db.execute(
-        'INSERT INTO users (email, password, maildir) VALUES (?, ?, ?)',
-        [mailbox.email, hash, mailbox.relativeMaildir],
+      const domainId = await this.getOrCreateDomainId(m.domain);
+      const [r] = await this.db.execute<ResultSetHeader>(
+        'INSERT INTO virtual_users (domain_id, email, password) VALUES (?, ?, ?)',
+        [domainId, m.email, hash],
       );
       return {
         ok: true,
         status: 'created' as const,
-        account: {
-          email: mailbox.email,
-          maildir: mailbox.relativeMaildir,
-        },
+        id: r.insertId,
+        user: { email: m.email, domain: m.domain },
       };
     } catch (error) {
       if (error instanceof HttpException) throw error;
@@ -108,10 +114,13 @@ export class AccountsService {
     }
   }
 
-  async listMailAccounts() {
+  async listUsers() {
     try {
-      const [rows] = await this.db.execute(
-        'SELECT email, maildir FROM users ORDER BY email ASC',
+      const [rows] = await this.db.execute<RowDataPacket[]>(
+        `SELECT vu.id, vu.email, vd.id AS domain_id, vd.name AS domain_name
+         FROM virtual_users vu
+         INNER JOIN virtual_domains vd ON vu.domain_id = vd.id
+         ORDER BY vu.email ASC`,
       );
       return { ok: true, rows };
     } catch (error) {
@@ -120,44 +129,99 @@ export class AccountsService {
     }
   }
 
+  async getUserById(id: number) {
+    try {
+      const [rows] = await this.db.execute<RowDataPacket[]>(
+        `SELECT vu.id, vu.email, vd.id AS domain_id, vd.name AS domain_name
+         FROM virtual_users vu
+         INNER JOIN virtual_domains vd ON vu.domain_id = vd.id
+         WHERE vu.id = ?
+         LIMIT 1`,
+        [id],
+      );
+      if (!rows.length) {
+        this.throwApiError('not_found', 'User not found');
+      }
+      return { ok: true, user: rows[0] };
+    } catch (error) {
+      if (error instanceof HttpException) throw error;
+      this.handleError(error);
+    }
+  }
+
   async emailExists(rawEmail: string) {
     try {
-      const mailbox = parseMailbox(rawEmail);
-      const [rows] = await this.db.execute(
-        'SELECT 1 AS found FROM users WHERE email = ? LIMIT 1',
-        [mailbox.email],
+      const m = parseMailbox(rawEmail);
+      const [rows] = await this.db.execute<RowDataPacket[]>(
+        'SELECT 1 AS found FROM virtual_users WHERE email = ? LIMIT 1',
+        [m.email],
       );
-      const list = rows as { found: number }[];
-      const exists = list.length > 0;
-      return { ok: true, exists, email: mailbox.email };
+      return { ok: true, exists: rows.length > 0, email: m.email };
     } catch (error) {
       if (error instanceof HttpException) throw error;
       this.handleError(error);
     }
   }
 
-  async deleteAccount(email: string) {
+  async updateUser(
+    id: number,
+    body: { email?: string; password?: string },
+  ) {
     try {
-      const mailbox = parseMailbox(email);
-      await this.db.execute('DELETE FROM users WHERE email = ?', [
-        mailbox.email,
-      ]);
-      return { ok: true, deleted: true as const };
+      if (!body.email?.trim() && !body.password) {
+        this.throwApiError('validation_error', 'Provide email and/or password');
+      }
+      const [found] = await this.db.execute<RowDataPacket[]>(
+        'SELECT 1 AS ok FROM virtual_users WHERE id = ? LIMIT 1',
+        [id],
+      );
+      if (!found.length) {
+        this.throwApiError('not_found', 'User not found');
+      }
+
+      if (body.email && body.password) {
+        const m = parseMailbox(body.email);
+        const domainId = await this.getOrCreateDomainId(m.domain);
+        const hash = await buildDovecotHash(body.password);
+        await this.db.execute(
+          'UPDATE virtual_users SET email = ?, domain_id = ?, password = ? WHERE id = ?',
+          [m.email, domainId, hash, id],
+        );
+        return { ok: true, updated: true as const, id };
+      }
+      if (body.email) {
+        const m = parseMailbox(body.email);
+        const domainId = await this.getOrCreateDomainId(m.domain);
+        await this.db.execute(
+          'UPDATE virtual_users SET email = ?, domain_id = ? WHERE id = ?',
+          [m.email, domainId, id],
+        );
+        return { ok: true, updated: true as const, id };
+      }
+      if (body.password) {
+        const hash = await buildDovecotHash(body.password);
+        await this.db.execute(
+          'UPDATE virtual_users SET password = ? WHERE id = ?',
+          [hash, id],
+        );
+        return { ok: true, updated: true as const, id };
+      }
     } catch (error) {
       if (error instanceof HttpException) throw error;
       this.handleError(error);
     }
   }
 
-  async updatePassword(email: string, password: string) {
+  async deleteUser(id: number) {
     try {
-      const mailbox = parseMailbox(email);
-      const hash = await buildDovecotHash(password);
-      await this.db.execute('UPDATE users SET password = ? WHERE email = ?', [
-        hash,
-        mailbox.email,
-      ]);
-      return { ok: true, updated: true as const };
+      const [r] = await this.db.execute<ResultSetHeader>(
+        'DELETE FROM virtual_users WHERE id = ?',
+        [id],
+      );
+      if (r.affectedRows === 0) {
+        this.throwApiError('not_found', 'User not found');
+      }
+      return { ok: true, deleted: true as const, id };
     } catch (error) {
       if (error instanceof HttpException) throw error;
       this.handleError(error);
