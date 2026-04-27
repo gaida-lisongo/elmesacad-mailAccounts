@@ -196,7 +196,15 @@ En cas d’échec, le corps ressemble à :
 
 ## Image Docker (build & run)
 
-### Construire l’image
+### CI/CD (GitHub Actions)
+
+Si le dépôt Git est la racine de **account-service** (comme pour les autres microservices), un workflow **Build and Push** est défini dans `.github/workflows/docker-publish.yml`.
+
+- **Image publiée** : `inbtp/elmesacad-mail:latest` (adapter le préfixe `inbtp/` si ton namespace Docker Hub est différent).
+- **Secrets GitHub du dépôt** : `DOCKERHUB_USERNAME`, `DOCKERHUB_TOKEN` (comme pour `elmesacad-auth`, `elmesacad-student`, etc.).
+- Les **pull requests** sur `main` / `master` construisent l’image sans la pousser ; le **push** sur ces branches publie sur Docker Hub.
+
+### Construire l’image en local
 
 À la racine de `account-service` :
 
@@ -216,6 +224,20 @@ docker run --rm -p 3000:3000 \
   -e DB_SECRET=ton_mot_de_passe \
   -e DB_NAME=mailserver \
   account-service:local
+```
+
+Même principe avec l’image construite par la CI :
+
+```bash
+docker pull inbtp/elmesacad-mail:latest
+docker run --rm -p 3000:3000 \
+  --add-host=host.docker.internal:host-gateway \
+  -e DB_HOST=host.docker.internal \
+  -e DB_PORT=3306 \
+  -e DB_USER=mailuser \
+  -e DB_SECRET=ton_mot_de_passe \
+  -e DB_NAME=mailserver \
+  inbtp/elmesacad-mail:latest
 ```
 
 > Sur Linux, `host.docker.internal` n’existe pas toujours ; utilise `--add-host=host.docker.internal:host-gateway` (Docker 20.10+) ou l’IP de ton hôte, ou mets le service sur le même réseau Docker que MySQL.
