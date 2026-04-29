@@ -1,5 +1,6 @@
 import { HttpException, HttpStatus, Inject, Injectable } from '@nestjs/common';
-import { Connection, ResultSetHeader, RowDataPacket } from 'mysql2/promise';
+import type { Pool } from 'mysql2/promise';
+import { ResultSetHeader, RowDataPacket } from 'mysql2/promise';
 import { buildDovecotHash, parseMailbox } from './mail-accounts.util';
 
 export type MailApiErrorCode =
@@ -12,9 +13,7 @@ export type MailApiErrorCode =
 
 @Injectable()
 export class AccountsService {
-  constructor(
-    @Inject('DATABASE_CONNECTION') private readonly db: Connection,
-  ) {}
+  constructor(@Inject('DATABASE_CONNECTION') private readonly db: Pool) {}
 
   private getStatusFromCode(code: MailApiErrorCode): number {
     if (code === 'validation_error') return HttpStatus.BAD_REQUEST;
@@ -58,6 +57,17 @@ export class AccountsService {
     }
     if (mysqlError.code === 'ER_DUP_ENTRY') {
       this.throwApiError('validation_error', 'Email or alias already exists.');
+    }
+    if (
+      mysqlError.code === 'PROTOCOL_CONNECTION_LOST' ||
+      mysqlError.code === 'PROTOCOL_ENQUEUE_AFTER_QUIT' ||
+      (typeof mysqlError.message === 'string' &&
+        mysqlError.message.includes('closed state'))
+    ) {
+      this.throwApiError(
+        'db_unreachable',
+        'Connexion MariaDB fermée ou interrompue. Vérifier MariaDB puis redémarrer le service mail si nécessaire.',
+      );
     }
     if (
       mysqlError.code === 'ECONNREFUSED' ||

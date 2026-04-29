@@ -1,11 +1,12 @@
 import { HttpException, HttpStatus, Inject, Injectable } from '@nestjs/common';
-import { Connection, ResultSetHeader, RowDataPacket } from 'mysql2/promise';
+import type { Pool } from 'mysql2/promise';
+import { ResultSetHeader, RowDataPacket } from 'mysql2/promise';
 import { parseMailbox } from '../accounts/mail-accounts.util';
 
 @Injectable()
 export class AliasesService {
   constructor(
-    @Inject('DATABASE_CONNECTION') private readonly db: Connection,
+    @Inject('DATABASE_CONNECTION') private readonly db: Pool,
   ) {}
 
   private throw(msg: string, status = HttpStatus.BAD_REQUEST) {
